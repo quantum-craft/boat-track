@@ -4,6 +4,7 @@ import shutil
 from dotenv import load_dotenv
 import httpx
 from datetime import date, datetime, timedelta
+import csv
 import yaml
 
 
@@ -42,6 +43,7 @@ def validate_dates(
         return "不能把今天設為結束日期"
 
     delta = (e - s).days
+
     return "正確", delta
 
 
@@ -130,8 +132,34 @@ def combine_result_files(mmsi: str, temp_dir: str, results_dir: str) -> None:
 
     os.makedirs(final_result_dir, exist_ok=True)
 
-    for filename in os.listdir(output_dir):
-        print(filename)
+    combined_file_path = f"{final_result_dir}/vessel_track_{mmsi}_combined.csv"
+
+    csv_files = [f for f in os.listdir(output_dir) if f.endswith(".csv")]
+    csv_files.sort()  # Sort to maintain chronological order
+
+    header_saved = False
+    with open(combined_file_path, "w", newline="", encoding="utf-8") as outfile:
+        writer = None
+        for filename in csv_files:
+            file_path = os.path.join(output_dir, filename)
+            print(f"Processing chunk: {filename}")
+
+            with open(file_path, "r", newline="", encoding="utf-8") as infile:
+                reader = csv.reader(infile)
+                try:
+                    header = next(reader)
+                    if not header_saved:
+                        writer = csv.writer(outfile)
+                        writer.writerow(header)
+                        header_saved = True
+
+                    for row in reader:
+                        writer.writerow(row)
+                except StopIteration:
+                    print(f"Warning: {filename} is empty.")
+                    continue
+
+    print(f"Successfully combined all files into: {combined_file_path}")
 
 
 def get_output_dir_path(mmsi: str, temp_dir: str) -> str:
@@ -179,7 +207,9 @@ async def download_vessel_track_data(
 
         if not res:
             print("Failed to download vessel track data")
-            return
+            return False
+
+        return True
 
     else:
         print(f"Interval is {days} days (> 180), splitting requests...")
@@ -200,7 +230,7 @@ async def download_vessel_track_data(
 
             if not res:
                 print("Failed to download vessel track data")
-                return
+                return False
 
             current_start = current_end + timedelta(days=1)
 
@@ -208,6 +238,8 @@ async def download_vessel_track_data(
             if current_start < end_date:
                 print("Sleeping for 60 seconds between chunks...")
                 await asyncio.sleep(60)
+
+        return True
 
 
 async def main():
@@ -238,13 +270,16 @@ async def main():
     start_date = parse_date(FROM_DATE)
     end_date = parse_date(TO_DATE)
 
-    await download_vessel_track_data(
+    res = await download_vessel_track_data(
         api_key=API_KEY,
         mmsi=MMSI,
         start_date=start_date,
         end_date=end_date,
         temp_dir=TEMP_DIR,
     )
+
+    if not res:
+        return
 
     combine_result_files(
         mmsi=MMSI,
