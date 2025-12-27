@@ -1,6 +1,10 @@
 import asyncio
+import os
+import shutil
+from dotenv import load_dotenv
 import httpx
 from datetime import date, datetime, timedelta
+import yaml
 
 
 def parse_date(d: str | date) -> date:
@@ -48,7 +52,8 @@ async def fetch_vessel_track(
     to_date: date,
     protocol: str = "csv",
     version: int = 3,
-    temp_dir: str = "./temp",
+    *,
+    output_dir: str,
 ) -> None:
     """
     Fetches vessel track data from MarineTraffic API and saves it to a file.
@@ -82,62 +87,120 @@ async def fetch_vessel_track(
             # Generate filename based on parameters
             filename = f"vessel_track_{mmsi}_{from_date}_{to_date}.{protocol}"
 
-            with open(f"{temp_dir}/{filename}", "wb") as f:
+            with open(f"{output_dir}/{filename}", "wb") as f:
                 f.write(response.content)
 
             print(f"Successfully downloaded: {filename}")
 
+            return True
+
     except httpx.HTTPStatusError as e:
         print(f"HTTP Error: {e.response.status_code} - {e.response.text}")
+
+        return False
     except Exception as e:
         print(f"An error occurred: {e}")
 
+        return False
 
-async def main():
-    # Configuration
-    API_KEY = "6e22363ada662d5dd2dbab10fe139e79246b4a99"
-    MMSI = "538007475"
-    FROM_DATE = "2022-01-08"
-    TO_DATE = "2025-12-26"
 
-    days = None
+def combine_result_files(mmsi: str, temp_dir: str, results_dir: str) -> None:
+    """
+    Combines all result files into a single file.
+    """
 
-    res = validate_dates(FROM_DATE, TO_DATE)
-    if isinstance(res, tuple) and res[0] == "正確":
-        days = res[1]
-        print(f"Correct, total days: {days}")
-    else:
+    output_dir = get_output_dir_path(
+        mmsi=mmsi,
+        temp_dir=temp_dir,
+    )
+
+    if not os.path.exists(output_dir):
+        print(f"Output directory does not exist: {output_dir}")
+
+        return
+
+    print(f"Combine all chunk files in {output_dir}:")
+    final_result_dir = final_result_dir_path(
+        mmsi=mmsi,
+        results_dir=results_dir,
+    )
+
+    if os.path.exists(final_result_dir):
+        shutil.rmtree(final_result_dir)
+
+    os.makedirs(final_result_dir, exist_ok=True)
+
+    for filename in os.listdir(output_dir):
+        print(filename)
+
+
+def get_output_dir_path(mmsi: str, temp_dir: str) -> str:
+    return f"{temp_dir}/vessel_track_{mmsi}"
+
+
+def final_result_dir_path(mmsi: str, results_dir: str) -> str:
+    return f"{results_dir}/vessel_track_{mmsi}"
+
+
+async def download_vessel_track_data(
+    api_key: str, mmsi: str, start_date: date, end_date: date, temp_dir: str
+) -> None:
+    """
+    Validates dates and downloads vessel track data, splitting into chunks if necessary.
+    """
+
+    res = validate_dates(start_date, end_date)
+    if not (isinstance(res, tuple) and res[0] == "正確"):
         print(f"Error: {res}")
         return
 
-    start_date = parse_date(FROM_DATE)
-    end_date = parse_date(TO_DATE)
+    days = res[1]
+
+    print(f"Correct, total days: {days}")
+
+    output_dir = get_output_dir_path(
+        mmsi=mmsi,
+        temp_dir=temp_dir,
+    )
+
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir)
+
+    os.makedirs(output_dir, exist_ok=True)
 
     if days <= 180:
-        await fetch_vessel_track(
-            api_key=API_KEY,
-            mmsi=MMSI,
+        res = await fetch_vessel_track(
+            api_key=api_key,
+            mmsi=mmsi,
             from_date=start_date,
             to_date=end_date,
-            temp_dir="./temp",
+            output_dir=output_dir,
         )
+
+        if not res:
+            print("Failed to download vessel track data")
+            return
+
     else:
         print(f"Interval is {days} days (> 180), splitting requests...")
 
         current_start = start_date
         while current_start < end_date:
-
             current_end = current_start + timedelta(days=180)
             if current_end > end_date:
                 current_end = end_date
 
-            await fetch_vessel_track(
-                api_key=API_KEY,
-                mmsi=MMSI,
+            res = await fetch_vessel_track(
+                api_key=api_key,
+                mmsi=mmsi,
                 from_date=current_start,
                 to_date=current_end,
-                temp_dir="./temp",
+                output_dir=output_dir,
             )
+
+            if not res:
+                print("Failed to download vessel track data")
+                return
 
             current_start = current_end + timedelta(days=1)
 
@@ -145,6 +208,49 @@ async def main():
             if current_start < end_date:
                 print("Sleeping for 60 seconds between chunks...")
                 await asyncio.sleep(60)
+
+
+async def main():
+    load_dotenv()
+
+    # Load configuration from YAML
+    try:
+        with open("config.yaml", "r") as f:
+            config = yaml.safe_load(f)
+    except FileNotFoundError:
+        print("Error: config.yaml not found.")
+        return
+
+    # Configuration
+    API_KEY = os.getenv("MARINE_TRAFFIC_API_KEY")
+    MMSI = config.get("mmsi")
+    FROM_DATE = config.get("from_date")
+    TO_DATE = config.get("to_date")
+    TEMP_DIR = config.get("temp_dir")
+    RESULTS_DIR = config.get("results_dir")
+
+    if not all([API_KEY, MMSI, FROM_DATE, TO_DATE]):
+        print(
+            "Error: Missing required configuration (API_KEY, MMSI, FROM_DATE, or TO_DATE)."
+        )
+        return
+
+    start_date = parse_date(FROM_DATE)
+    end_date = parse_date(TO_DATE)
+
+    await download_vessel_track_data(
+        api_key=API_KEY,
+        mmsi=MMSI,
+        start_date=start_date,
+        end_date=end_date,
+        temp_dir=TEMP_DIR,
+    )
+
+    combine_result_files(
+        mmsi=MMSI,
+        temp_dir=TEMP_DIR,
+        results_dir=RESULTS_DIR,
+    )
 
 
 if __name__ == "__main__":
