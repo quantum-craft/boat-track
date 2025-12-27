@@ -7,6 +7,7 @@ import asyncio
 from date_utils import parse_date
 from download_api import download_vessel_track_data
 from download_api import fetch_vessel_track
+from path_utils import get_output_dir_path, final_result_dir_path
 
 
 def combine_result_files(mmsi: str, temp_dir: str, results_dir: str) -> None:
