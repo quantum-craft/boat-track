@@ -5,7 +5,7 @@ import asyncio
 from datetime import date
 from datetime import timedelta
 from date_utils import validate_dates
-from path_utils import get_output_dir_path, final_result_dir_path
+from file_utils import get_output_dir_path
 
 
 async def fetch_vessel_track(
